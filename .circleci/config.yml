@@ -1,0 +1,110 @@
+version: 2.1
+
+executors:
+  default:
+    working_directory: ~/webapp
+    docker:
+      - image: circleci/ruby:2.5.9-node
+        environment:
+          BUNDLER_VERSION: 1.17.2
+          RAILS_ENV: test
+          DB_USERNAME: root
+          DB_PASSWORD: ""
+          DB_HOST: 127.0.0.1
+      - image: circleci/mysql:5.7
+        environment:
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_ALLOW_EMPTY_PASSWORD: "true"
+
+commands:
+  setup:
+    steps:
+      - checkout
+      - run:
+          name: Update bundler
+          command: gem update bundler
+
+      - run:
+          name: Which bundler?
+          command: bundle -v
+
+      - restore_cache:
+          keys:
+            - gem-cache-v1-{{ checksum "src/Gemfile.lock" }}
+            - gem-cache-v1-
+
+      - run:
+          name: Bundle Install
+          command: bundle check --path vendor/bundle || bundle install --deployment
+          working_directory: src
+
+      - save_cache:
+          key: gem-cache-v1-{{ checksum "src/Gemfile.lock" }}
+          paths:
+            - vendor/bundle
+
+      # 以下はRails6でWebpackerを使う場合は必須
+      # - restore_cache:
+      #     keys:
+      #       - yarn-cache-v1-{{ checksum "yarn.lock" }}
+      #       - yarn-cache-v1-
+
+      # - run:
+      #     name: Yarn Install
+      #     command: yarn install --cache-folder ~/.cache/yarn
+
+      # - save_cache:
+      #     key: yarn-cache-v1-{{ checksum "yarn.lock" }}
+      #     paths:
+      #       - ~/.cache/yarn
+
+  connect_db:
+    steps:
+      - run:
+          name: Wait for DB
+          command: dockerize -wait tcp://127.0.0.1:3306 -timeout 90s
+
+      - run:
+          name: Use specific database.yml
+          command: mv config/database.ci.yml config/database.yml
+          working_directory: src
+
+      - run:
+          name: Database setup
+          command: |
+            bundle exec rails db:create
+            bundle exec rails db:schema:load --trace
+          working_directory: src
+
+jobs:
+  build:
+    executor: default
+    environment:
+      RAILS_ENV: test
+    steps:
+      - setup
+
+  test:
+    executor: default
+    environment:
+      RAILS_ENV: test
+    steps:
+      - setup
+      - connect_db
+      - run:
+          name: rspec
+          command: bundle exec rspec
+          working_directory: src
+
+      - run:
+          name: rubocop
+          command: bundle exec rubocop
+          working_directory: src
+
+workflows:
+  build_and_test:
+    jobs:
+      - build
+      - test:
+          requires:
+            - build
